@@ -1,9 +1,14 @@
 import JSZip from "https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm";
 
-const pagesFileInput = document.getElementById("pagesFile");
-const extractButton = document.getElementById("extractButton");
-const extractStatus = document.getElementById("extractStatus");
+const templateFileInput = document.getElementById("templateFile");
+const extractTemplateButton = document.getElementById("extractTemplateButton");
+const templateStatus = document.getElementById("templateStatus");
 const templateText = document.getElementById("templateText");
+
+const dataFileInput = document.getElementById("dataFile");
+const extractDataButton = document.getElementById("extractDataButton");
+const dataStatus = document.getElementById("dataStatus");
+
 const placeholderFields = document.getElementById("placeholderFields");
 const jsonInput = document.getElementById("jsonInput");
 const renderButton = document.getElementById("renderButton");
@@ -51,6 +56,39 @@ function extractReadableText(raw, path) {
   return normalizeWhitespace(raw);
 }
 
+async function extractBestTextFromPages(file) {
+  const zip = await JSZip.loadAsync(file);
+  const candidates = collectFileCandidates(zip);
+  let bestText = "";
+
+  for (const name of candidates) {
+    const isLikelyText = /\.(xml|html|txt)$/i.test(name) || /preview/i.test(name);
+    if (!isLikelyText) continue;
+
+    try {
+      const raw = await zip.file(name)?.async("string");
+      if (!raw) continue;
+
+      const cleaned = extractReadableText(raw, name);
+      if (cleaned.length > bestText.length) {
+        bestText = cleaned;
+      }
+
+      if (name.toLowerCase().endsWith("preview.html") && cleaned.length > 50) {
+        return cleaned;
+      }
+    } catch {
+      // Ignore unreadable entries.
+    }
+  }
+
+  if (!bestText) {
+    throw new Error("Could not extract readable text from this .pages file.");
+  }
+
+  return bestText;
+}
+
 function findPlaceholders(template) {
   const placeholders = new Set();
   template.replace(/{{\s*([\w.]+)\s*}}/g, (_, token) => {
@@ -89,7 +127,46 @@ function renderTemplate(template, data) {
   });
 }
 
-function createPlaceholderInputs(template) {
+function mergeObjects(base, override) {
+  if (typeof base !== "object" || base === null) return override;
+  if (typeof override !== "object" || override === null) return override;
+
+  const result = { ...base };
+  for (const key of Object.keys(override)) {
+    if (key in result && typeof result[key] === "object" && typeof override[key] === "object") {
+      result[key] = mergeObjects(result[key], override[key]);
+    } else {
+      result[key] = override[key];
+    }
+  }
+  return result;
+}
+
+function extractDataObjectFromText(text) {
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed === "object" && parsed !== null) {
+      return parsed;
+    }
+  } catch {
+    // Fall through to key:value parsing.
+  }
+
+  const result = {};
+  const lines = text.split("\n");
+
+  for (const line of lines) {
+    const match = line.match(/^\s*([A-Za-z0-9_.-]+)\s*:\s*(.+?)\s*$/);
+    if (!match) continue;
+
+    const [, key, value] = match;
+    setValueByPath(result, key, value);
+  }
+
+  return result;
+}
+
+function createPlaceholderInputs(template, initialData = {}) {
   const placeholders = findPlaceholders(template);
   placeholderFields.innerHTML = "";
 
@@ -110,95 +187,76 @@ function createPlaceholderInputs(template) {
     input.dataset.token = token;
     input.placeholder = `Value for ${token}`;
 
+    const existingValue = getValueByPath(initialData, token);
+    if (existingValue !== undefined && existingValue !== null) {
+      input.value = String(existingValue);
+    }
+
     wrapper.append(label, input);
     placeholderFields.append(wrapper);
   });
 }
 
-function readInputData() {
-  const dataFromFields = {};
-  const fieldInputs = placeholderFields.querySelectorAll("input[data-token]");
+function collectDataFromPlaceholderFields() {
+  const data = {};
+  const inputs = placeholderFields.querySelectorAll("input[data-token]");
 
-  fieldInputs.forEach((input) => {
+  inputs.forEach((input) => {
     if (input.value.trim() !== "") {
-      setValueByPath(dataFromFields, input.dataset.token, input.value);
+      setValueByPath(data, input.dataset.token, input.value);
     }
   });
 
+  return data;
+}
+
+function readMergedData() {
   let dataFromJson = {};
   const jsonRaw = jsonInput.value.trim();
   if (jsonRaw) {
     dataFromJson = JSON.parse(jsonRaw);
   }
 
+  const dataFromFields = collectDataFromPlaceholderFields();
   return mergeObjects(dataFromJson, dataFromFields);
 }
 
-function mergeObjects(base, override) {
-  if (typeof base !== "object" || base === null) return override;
-  if (typeof override !== "object" || override === null) return override;
-
-  const result = { ...base };
-  for (const key of Object.keys(override)) {
-    if (key in result && typeof result[key] === "object" && typeof override[key] === "object") {
-      result[key] = mergeObjects(result[key], override[key]);
-    } else {
-      result[key] = override[key];
-    }
-  }
-  return result;
-}
-
-async function extractTemplateFromPages(file) {
-  const zip = await JSZip.loadAsync(file);
-  const candidates = collectFileCandidates(zip);
-
-  let bestText = "";
-
-  for (const name of candidates) {
-    const isLikelyText = /\.(xml|html|txt)$/i.test(name) || /preview/i.test(name);
-    if (!isLikelyText) continue;
-
-    try {
-      const raw = await zip.file(name)?.async("string");
-      if (!raw) continue;
-
-      const cleaned = extractReadableText(raw, name);
-      if (cleaned.length > bestText.length) {
-        bestText = cleaned;
-      }
-
-      if (name.toLowerCase().endsWith("preview.html") && cleaned.length > 50) {
-        return cleaned;
-      }
-    } catch {
-      // Ignore non-readable entries.
-    }
-  }
-
-  if (!bestText) {
-    throw new Error("Could not extract readable text from this .pages file.");
-  }
-
-  return bestText;
-}
-
-extractButton.addEventListener("click", async () => {
-  const file = pagesFileInput.files?.[0];
+extractTemplateButton.addEventListener("click", async () => {
+  const file = templateFileInput.files?.[0];
   if (!file) {
-    extractStatus.textContent = "Choose a .pages file first.";
+    templateStatus.textContent = "Choose a template .pages file first.";
     return;
   }
 
-  extractStatus.textContent = "Extracting text...";
+  templateStatus.textContent = "Extracting template text...";
 
   try {
-    const extracted = await extractTemplateFromPages(file);
+    const extracted = await extractBestTextFromPages(file);
     templateText.value = extracted;
     createPlaceholderInputs(extracted);
-    extractStatus.textContent = "Template extracted. Fill values and click Render output.";
+    templateStatus.textContent = "Template extracted. Now upload your data .pages file.";
   } catch (error) {
-    extractStatus.textContent = `Extraction failed: ${error.message}`;
+    templateStatus.textContent = `Template extraction failed: ${error.message}`;
+  }
+});
+
+extractDataButton.addEventListener("click", async () => {
+  const file = dataFileInput.files?.[0];
+  if (!file) {
+    dataStatus.textContent = "Choose a data .pages file first.";
+    return;
+  }
+
+  dataStatus.textContent = "Extracting values from data file...";
+
+  try {
+    const extractedText = await extractBestTextFromPages(file);
+    const dataObject = extractDataObjectFromText(extractedText);
+
+    createPlaceholderInputs(templateText.value, dataObject);
+    dataStatus.textContent = "Data extracted and mapped to detected placeholders.";
+  } catch (error) {
+    dataStatus.textContent = `Data extraction failed: ${error.message}`;
   }
 });
 
@@ -215,7 +273,7 @@ renderButton.addEventListener("click", () => {
 
   let data;
   try {
-    data = readInputData();
+    data = readMergedData();
   } catch (error) {
     renderStatus.textContent = `Invalid JSON: ${error.message}`;
     return;
@@ -231,6 +289,7 @@ copyButton.addEventListener("click", async () => {
     renderStatus.textContent = "Nothing to copy yet.";
     return;
   }
+
   await navigator.clipboard.writeText(text);
   renderStatus.textContent = "Copied.";
 });
