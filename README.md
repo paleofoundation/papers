@@ -1,71 +1,106 @@
-# Local-First DOCX Template Filler (Codex 5.3)
+# Style-Family DOCX Generator (Codex 5.3)
 
-This project generates a new `OUTPUT.docx` by taking `TEMPLATE.docx` as the style/layout source of truth and replacing only tagged textual regions.
+Local-first system that infers a shared layout grammar from **3–5 style example DOCX files**, then generates a new DOCX for new content while preserving style-family organization.
 
-## Why this preserves formatting
+## Deliverables
 
-- We **do not infer style** from arbitrary documents.
-- We fill predefined regions in the template (`content controls` preferred, `{{PLACEHOLDER}}` fallback).
-- Word keeps all original layout/style structures (fonts, colors, spacing, columns, headers, shading, etc.).
+- `apps/web` – Next.js UI for upload, inference, generation, and audit download.
+- `apps/worker` – Node HTTP API (`/infer`, `/generate`) for local processing.
+- `packages/engine` – OpenXML parsing, graph building, signatures, clustering, inference, mapping, citation pass, constraints.
 
-## Monorepo layout
+## Why this approach
 
-- `apps/web` – Next.js local UI + API route.
-- `packages/core` – content parser, mapping engine, citation parser, constraints.
-- `packages/docx` – DOCX fill + OpenXML citation post-processing.
-- `docs/technical-design.md` – architecture decisions.
+- We do **not** export/reimport via HTML/PDF.
+- We infer containers and constraints from example DOCX documents.
+- We generate from a **medoid skeleton** (representative example), preserving OpenXML layout structures.
 
-## How to convert existing document to TEMPLATE.docx
+See `docs/technical-design.md`.
 
-1. Open your base document in Word.
-2. Save as `TEMPLATE.docx`.
-3. Identify regions that should change (title, abstract, section blocks, references, etc.).
-4. Preferred: add **content controls** and tags (e.g., `TITLE`, `ABSTRACT`, `SECTION_METHODS`).
-5. Fallback: place text placeholders directly such as `{{TITLE}}`, `{{ABSTRACT}}`.
-
-## How to tag regions using the UI
-
-In the "Template Tagger" textarea, provide JSON array entries like:
-
-```json
-[
-  { "tag": "TITLE", "maxChars": 150 },
-  { "tag": "ABSTRACT", "maxChars": 1200, "continuationRegion": "ADDITIONAL_INFORMATION" },
-  { "tag": "SECTION_METHODS", "maxChars": 4000 },
-  { "tag": "ADDITIONAL_INFORMATION", "maxChars": 5000 }
-]
-```
-
-- `tag`: region identifier.
-- `maxChars`: conservative overflow cap.
-- `minFontSize`: minimum shrink target.
-- `continuationRegion`: where overflow text should route.
-
-## Run locally
+## Local run
 
 ```bash
 npm install
-npm run dev
+npm run dev:worker
+npm run dev:web
 ```
 
-Open `http://localhost:3000`.
+Web UI: `http://localhost:3000`.
 
-Workflow:
-1. Upload `TEMPLATE.docx`.
-2. Upload `CONTENT.docx` or paste plain text/markdown.
-3. Configure region tags/constraints.
-4. Click Generate.
-5. Download `OUTPUT.docx` and `audit-report.json`.
+Worker API: `http://localhost:4010`.
 
-## Citation handling
+## Workflow
 
-Inline citations like `[1]`, `[2–4]`, `(1,2)` are detected and transformed in OpenXML run-level pass:
+1. Upload **3–5 STYLE EXAMPLES** (`.docx`) in the web app.
+2. Click **Infer Layout Template Model**.
+3. Upload **CONTENT DOCX** or paste structured text.
+4. Click **Generate**.
+5. Download `OUTPUT.docx` and `audit.json`.
 
-- citation chars only are superscripted,
-- citation chars are recolored (configurable color).
+## API (worker)
 
-## Known limitations
+### `POST /infer`
+JSON body:
 
-- Best with templates explicitly prepared using content controls or placeholders.
-- Overflow uses deterministic conservative caps (char/line approximations), not pixel-perfect textbox fit.
-- If template has complex nested SDT structures, fallback placeholder flow may be more reliable.
+```json
+{ "styleExamplesBase64": ["..."] }
+```
+
+Returns inferred layout model with regions, constraints, citation color, medoid index.
+
+### `POST /generate`
+JSON body:
+
+```json
+{
+  "styleExamplesBase64": ["..."],
+  "model": { "regions": [] },
+  "contentDocxBase64": "...",
+  "contentText": "..."
+}
+```
+
+Returns:
+
+```json
+{ "outputDocxBase64": "...", "audit": { "mappings": [] } }
+```
+
+## Inference behavior
+
+The engine parses:
+
+- `word/document.xml`
+- `word/styles.xml`
+- `word/header*.xml`
+- `word/footer*.xml`
+
+Builds a document graph, computes block signatures, clusters cross-document containers, and infers quantile constraints per region.
+
+## Best results guidance
+
+To improve inference stability:
+
+- Keep style examples in the same visual family.
+- Use consistent layout tables for abstract/metadata boxes.
+- Keep heading styles consistent across examples.
+- Preserve repeated header/footer structures.
+- Keep section ordering conventions stable.
+
+## Testing
+
+Engine tests include:
+
+- citation parser (`[2–4]`, `(1,2)`),
+- block signatures + clustering,
+- constraint enforcement,
+- integration test with 3 style examples + 1 content input.
+
+Run:
+
+```bash
+npm run test
+```
+
+## Hosted mode (later)
+
+`docker-compose.yml` is included for hosted deployment experiments; local mode remains default.

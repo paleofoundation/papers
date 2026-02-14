@@ -1,83 +1,76 @@
-# Technical Design: Template-First DOCX Generation (Local-First)
+# Technical Design: Style-Family DOCX Inference + Generation (Codex 5.3)
 
-## Why template filling instead of style inference
+## 1) Why inferred skeleton reuse (not reconstruction)
 
-We choose **template filling** as the primary strategy because DOCX layout fidelity depends on many interdependent OpenXML constructs (paragraph styles, run properties, section properties, table grids, numbering definitions, headers/footers, drawing anchors, text boxes, columns, shading, etc.).
+The system infers an internal **Layout Template Model** from 3–5 DOCX style examples but still generates by reusing an observed DOCX skeleton (medoid example). This avoids rebuilding layout from scratch and preserves OpenXML constructs that control visual fidelity:
 
-Attempting to infer style from an arbitrary input and reconstruct equivalent layout is brittle and non-deterministic. By treating `TEMPLATE.docx` as the single source of truth, we:
+- section/column definitions (`w:sectPr`, `w:cols`)
+- header/footer references and content parts
+- table geometry, cell shading/borders
+- anchored shapes/textboxes where present
+- paragraph/run style references and direct formatting.
 
-- preserve existing layout and style objects exactly,
-- only change text in explicitly tagged regions,
-- reduce risk of style drift,
-- provide deterministic, auditable behavior.
+So the inference stage learns **where** and **how much** content should go, while generation mutates text inside a representative existing structure.
 
-This aligns with the requirement to preserve fonts/colors/spacing/columns/header placement and shaded boxes.
+## 2) Layout Template Model
 
-## Region representation model
+### 2.1 Document Graph
+For each style example:
+- Parse `word/document.xml`, `styles.xml`, `header*.xml`, `footer*.xml`.
+- Build a graph with node types:
+  - `paragraph`, `table`, `tableCell`, `section`, `header`, `footer`, `shape` (when detectable),
+  - each node stores style/position metadata.
+- Edges:
+  - `contains`, `next`, `anchoredTo`, `styleRef`.
 
-We support two mechanisms:
+### 2.2 Block signatures
+Candidate container blocks (tables, repeated paragraph clusters, header/footer blocks) are fingerprinted by:
+- structure signature (table dimensions, border/shading features, section/column context),
+- style signature (dominant pStyle/rStyle/size/color/bold/caps),
+- relative position (normalized order index, top-of-document, header/footer scope).
 
-1. **Preferred**: Content control tags (SDTs) in WordprocessingML (`w:sdt` with `w:tag/@w:val`).
-2. **Fallback**: Plain placeholders in text (`{{TAG_NAME}}`).
+### 2.3 Cross-document alignment
+- Cluster block signatures by weighted similarity.
+- Stable clusters become inferred regions/containers.
+- Labels are inferred heuristically (e.g., short top block => TITLE-like; shaded mid-top block => ABSTRACT-like; repeating heading/body patterns => SECTION_HEADER/BODY).
 
-The Template Tagger UI stores region metadata (`tag`, constraints, continuation target) in a sidecar JSON. Generation uses this metadata with the template document:
+### 2.4 Constraint inference
+For each region cluster across examples:
+- collect empirical char-count and line-count proxies,
+- store quantile-based limits (e.g., p90 max chars, p90 max lines),
+- infer min font size from observed run sizes,
+- define overflow policy: shrink-to-min, then continuation region, else audit warning.
 
-- direct tag mapping (`TITLE -> TITLE`),
-- section heading normalization for section mappings,
-- optional fallback mapping to `ADDITIONAL_INFORMATION` region.
+## 3) Content mapping
+Input content (DOCX via mammoth or plain text) is normalized into:
+- title, authors, affiliations, abstract,
+- ordered sections `{ heading, body }`,
+- references/citations.
 
-## Content parsing and mapping
+Mapping order:
+1. label compatibility (TITLE -> TITLE-like region),
+2. heading similarity for section regions,
+3. positional fallback to nearest compatible region.
 
-`CONTENT.docx` is parsed semantically using `mammoth` to derive a structured model:
+All non-exact mappings are reported in audit.
 
-- `title`, `authors`, `affiliations`, `abstract`,
-- `sections[] = { heading, body }`,
-- optional table-like blocks,
-- citation candidates in text.
+## 4) Generation pipeline
+1. Select medoid style example as base skeleton.
+2. Fill inferred regions by replacing text runs while preserving style refs.
+3. Constraint enforcement per region (truncate/shrink/overflow routing) with deterministic decisions.
+4. Citation pass on OpenXML runs:
+   - detect `[1]`, `[2–4]`, `(1,2)` etc.,
+   - split run text so citation chars are isolated,
+   - apply superscript + inferred citation color token.
+5. Emit `OUTPUT.docx` and `audit.json`:
+   - mapping decisions,
+   - constraint actions,
+   - overflow records,
+   - style token similarity score.
 
-Mapping strategy:
+## 5) Product architecture
+- `apps/web`: Next.js local-first UI.
+- `apps/worker`: Node HTTP API for inference + generation.
+- `packages/engine`: OpenXML parsing, graph/signature/clustering/inference/generation.
 
-- exact region tag match first,
-- normalized heading match for sections,
-- unmapped content recorded in audit.
-
-## OpenXML post-processing for citations
-
-After primary template fill, a second pass edits `word/document.xml` at run level:
-
-1. Walk text runs (`w:r/w:t`) in mapped regions.
-2. Detect citation tokens (`[1]`, `[2–4]`, `(1,2)` etc.) using deterministic parser.
-3. Split runs so citation substrings become separate runs.
-4. Apply run properties:
-   - superscript (`w:vertAlign w:val="superscript"`),
-   - citation color (`w:color w:val="..."`) based on region/template policy.
-
-Only citation characters are transformed; surrounding text remains unchanged.
-
-## Region constraints / overflow
-
-Each region can define constraints:
-
-- `maxChars`,
-- `maxLines` (conservative estimate),
-- `minFontSize`.
-
-Deterministic enforcement order:
-
-1. Attempt shrink by reducing run font size metadata down to `minFontSize`.
-2. If still exceeding cap, route overflow to configured continuation region.
-3. Else record overflow warning in audit.
-
-No claim of perfect pixel fit is made; the system reports cap-based enforcement decisions.
-
-## Local-first architecture
-
-- Next.js app and API routes run locally.
-- Files are processed in memory or local temp paths only.
-- No remote upload by default.
-
-## Packages
-
-- `apps/web`: Upload/tag/generate UI + API route.
-- `packages/core`: parsing, mapping, citations, constraints, audit model.
-- `packages/docx`: placeholder/content-control fill and OpenXML citation post-processing.
+Local mode is default (on-device processing). Hosted mode can run via `docker-compose` with ephemeral file handling.
