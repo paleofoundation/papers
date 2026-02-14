@@ -13,6 +13,7 @@ const placeholderFields = document.getElementById("placeholderFields");
 const jsonInput = document.getElementById("jsonInput");
 const renderButton = document.getElementById("renderButton");
 const copyButton = document.getElementById("copyButton");
+const downloadPagesButton = document.getElementById("downloadPagesButton");
 const renderStatus = document.getElementById("renderStatus");
 const renderOutput = document.getElementById("renderOutput");
 const renderFrame = document.getElementById("renderFrame");
@@ -20,15 +21,11 @@ const renderFrame = document.getElementById("renderFrame");
 let templateHtml = null;
 let templateHtmlPath = null;
 let templateZip = null;
+let lastRenderedData = null;
 const assetUrlCache = new Map();
 
 function normalizeWhitespace(text) {
-  return text
-    .replace(/\u0000/g, "")
-    .replace(/\r\n/g, "\n")
-    .replace(/[\t ]+/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  return text.replace(/\u0000/g, "").replace(/\r\n/g, "\n").replace(/[\t ]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function collectFileCandidates(zip) {
@@ -155,24 +152,18 @@ function mergeObjects(base, override) {
 function extractDataObjectFromText(text) {
   try {
     const parsed = JSON.parse(text);
-    if (typeof parsed === "object" && parsed !== null) {
-      return parsed;
-    }
+    if (typeof parsed === "object" && parsed !== null) return parsed;
   } catch {
-    // Fall through to key:value parsing.
+    // Fall through.
   }
 
   const result = {};
-  const lines = text.split("\n");
-
-  for (const line of lines) {
+  text.split("\n").forEach((line) => {
     const match = line.match(/^\s*([A-Za-z0-9_.-]+)\s*:\s*(.+?)\s*$/);
-    if (!match) continue;
-
+    if (!match) return;
     const [, key, value] = match;
     setValueByPath(result, key, value);
-  }
-
+  });
   return result;
 }
 
@@ -210,13 +201,11 @@ function createPlaceholderInputs(template, initialData = {}) {
 function collectDataFromPlaceholderFields() {
   const data = {};
   const inputs = placeholderFields.querySelectorAll("input[data-token]");
-
   inputs.forEach((input) => {
     if (input.value.trim() !== "") {
       setValueByPath(data, input.dataset.token, input.value);
     }
   });
-
   return data;
 }
 
@@ -226,9 +215,7 @@ function readMergedData() {
   if (jsonRaw) {
     dataFromJson = JSON.parse(jsonRaw);
   }
-
-  const dataFromFields = collectDataFromPlaceholderFields();
-  return mergeObjects(dataFromJson, dataFromFields);
+  return mergeObjects(dataFromJson, collectDataFromPlaceholderFields());
 }
 
 function dirname(path) {
@@ -237,28 +224,20 @@ function dirname(path) {
 }
 
 function resolveZipPath(baseFile, relativePath) {
-  if (!relativePath || relativePath.startsWith("data:") || relativePath.startsWith("http")) {
+  if (!relativePath || relativePath.startsWith("data:") || relativePath.startsWith("http") || relativePath.startsWith("blob:")) {
     return null;
   }
 
   const normalized = relativePath.split("?")[0].split("#")[0];
-  if (normalized.startsWith("/")) {
-    return normalized.slice(1);
-  }
+  if (normalized.startsWith("/")) return normalized.slice(1);
 
-  const base = dirname(baseFile);
-  const joined = `${base}${normalized}`;
+  const joined = `${dirname(baseFile)}${normalized}`;
   const parts = [];
-
   joined.split("/").forEach((segment) => {
     if (!segment || segment === ".") return;
-    if (segment === "..") {
-      parts.pop();
-    } else {
-      parts.push(segment);
-    }
+    if (segment === "..") parts.pop();
+    else parts.push(segment);
   });
-
   return parts.join("/");
 }
 
@@ -276,9 +255,7 @@ async function getAssetUrl(zipPath) {
 }
 
 async function renderStyledHtml(data) {
-  if (!templateHtml || !templateHtmlPath) {
-    return "";
-  }
+  if (!templateHtml || !templateHtmlPath) return "";
 
   const filledHtml = renderTemplateText(templateHtml, data);
   const parser = new DOMParser();
@@ -286,23 +263,58 @@ async function renderStyledHtml(data) {
 
   const links = [...doc.querySelectorAll("link[rel='stylesheet'][href]")];
   for (const link of links) {
-    const zipPath = resolveZipPath(templateHtmlPath, link.getAttribute("href"));
-    const assetUrl = await getAssetUrl(zipPath);
-    if (assetUrl) {
-      link.setAttribute("href", assetUrl);
-    }
+    const assetUrl = await getAssetUrl(resolveZipPath(templateHtmlPath, link.getAttribute("href")));
+    if (assetUrl) link.setAttribute("href", assetUrl);
   }
 
   const images = [...doc.querySelectorAll("img[src]")];
   for (const img of images) {
-    const zipPath = resolveZipPath(templateHtmlPath, img.getAttribute("src"));
-    const assetUrl = await getAssetUrl(zipPath);
-    if (assetUrl) {
-      img.setAttribute("src", assetUrl);
-    }
+    const assetUrl = await getAssetUrl(resolveZipPath(templateHtmlPath, img.getAttribute("src")));
+    if (assetUrl) img.setAttribute("src", assetUrl);
   }
 
   return `<!doctype html>\n${doc.documentElement.outerHTML}`;
+}
+
+async function buildPagesOutputBlob(data) {
+  if (!templateZip) {
+    throw new Error("Upload a template .pages file first.");
+  }
+
+  const outZip = new JSZip();
+  const entries = Object.keys(templateZip.files);
+
+  for (const name of entries) {
+    const entry = templateZip.files[name];
+    if (entry.dir) {
+      outZip.folder(name);
+      continue;
+    }
+
+    const asBlob = await entry.async("blob");
+    outZip.file(name, asBlob);
+  }
+
+  const dataText = renderTemplateText(templateText.value, data);
+  outZip.file("rendered-output.txt", dataText);
+
+  if (templateHtmlPath && templateHtml) {
+    const filledHtml = renderTemplateText(templateHtml, data);
+    outZip.file(templateHtmlPath, filledHtml);
+  }
+
+  return outZip.generateAsync({ type: "blob" });
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 extractTemplateButton.addEventListener("click", async () => {
@@ -313,6 +325,7 @@ extractTemplateButton.addEventListener("click", async () => {
   }
 
   templateStatus.textContent = "Extracting template text...";
+  assetUrlCache.clear();
 
   try {
     const result = await extractBestFromPages(file);
@@ -320,14 +333,12 @@ extractTemplateButton.addEventListener("click", async () => {
     templateHtml = result.previewHtml;
     templateHtmlPath = result.previewPath;
     templateZip = result.zip;
-
     createPlaceholderInputs(result.text);
+    downloadPagesButton.disabled = false;
 
-    if (templateHtml) {
-      templateStatus.textContent = "Template extracted with preview HTML styling (fonts/colors preserved in output).";
-    } else {
-      templateStatus.textContent = "Template extracted (no preview HTML styling found).";
-    }
+    templateStatus.textContent = templateHtml
+      ? "Template extracted with preview styling."
+      : "Template extracted (preview styling unavailable).";
   } catch (error) {
     templateStatus.textContent = `Template extraction failed: ${error.message}`;
   }
@@ -344,8 +355,7 @@ extractDataButton.addEventListener("click", async () => {
 
   try {
     const { text } = await extractBestFromPages(file);
-    const dataObject = extractDataObjectFromText(text);
-    createPlaceholderInputs(templateText.value, dataObject);
+    createPlaceholderInputs(templateText.value, extractDataObjectFromText(text));
     dataStatus.textContent = "Data extracted and mapped to placeholders.";
   } catch (error) {
     dataStatus.textContent = `Data extraction failed: ${error.message}`;
@@ -357,8 +367,7 @@ templateText.addEventListener("input", () => {
 });
 
 renderButton.addEventListener("click", async () => {
-  const template = templateText.value;
-  if (!template.trim()) {
+  if (!templateText.value.trim()) {
     renderStatus.textContent = "Template is empty.";
     return;
   }
@@ -371,21 +380,42 @@ renderButton.addEventListener("click", async () => {
     return;
   }
 
-  const plainText = renderTemplateText(template, data);
+  lastRenderedData = data;
+  const plainText = renderTemplateText(templateText.value, data);
   renderOutput.textContent = plainText;
 
   try {
     const styledHtml = await renderStyledHtml(data);
-    if (styledHtml) {
-      renderFrame.srcdoc = styledHtml;
-      renderStatus.textContent = "Output rendered with template fonts/colors and plain text copy.";
-    } else {
-      renderFrame.srcdoc = `<pre>${plainText.replace(/</g, "&lt;")}</pre>`;
-      renderStatus.textContent = "Output rendered (styled preview unavailable for this file).";
-    }
+    renderFrame.srcdoc = styledHtml || `<pre>${plainText.replace(/</g, "&lt;")}</pre>`;
+    renderStatus.textContent = styledHtml
+      ? "Output rendered with fonts/colors. You can now download a .pages file."
+      : "Output rendered (styled preview unavailable). You can still download a .pages file.";
   } catch {
     renderFrame.srcdoc = `<pre>${plainText.replace(/</g, "&lt;")}</pre>`;
     renderStatus.textContent = "Output rendered (failed to load some style assets).";
+  }
+});
+
+downloadPagesButton.addEventListener("click", async () => {
+  if (!templateZip) {
+    renderStatus.textContent = "Upload a template .pages file first.";
+    return;
+  }
+
+  let data;
+  try {
+    data = lastRenderedData ?? readMergedData();
+  } catch (error) {
+    renderStatus.textContent = `Invalid JSON: ${error.message}`;
+    return;
+  }
+
+  try {
+    const blob = await buildPagesOutputBlob(data);
+    downloadBlob(blob, "generated-output.pages");
+    renderStatus.textContent = "Downloaded generated-output.pages.";
+  } catch (error) {
+    renderStatus.textContent = `Failed to build .pages output: ${error.message}`;
   }
 });
 
