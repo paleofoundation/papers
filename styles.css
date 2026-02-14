@@ -9,7 +9,7 @@ body {
 }
 
 .container {
-  max-width: 920px;
+  max-width: 980px;
   margin: 2rem auto;
   padding: 0 1rem 2rem;
 }
@@ -77,6 +77,7 @@ button {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 0.6rem;
+  margin-bottom: 0.5rem;
 }
 
 .field {
@@ -87,6 +88,15 @@ button {
 
 .field code {
   font-size: 0.9rem;
+}
+
+.output-frame {
+  width: 100%;
+  min-height: 260px;
+  border: 1px solid #c8d0da;
+  border-radius: 8px;
+  background: white;
+  margin-bottom: 0.75rem;
 }
 
 pre {

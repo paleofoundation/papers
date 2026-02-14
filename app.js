@@ -15,6 +15,12 @@ const renderButton = document.getElementById("renderButton");
 const copyButton = document.getElementById("copyButton");
 const renderStatus = document.getElementById("renderStatus");
 const renderOutput = document.getElementById("renderOutput");
+const renderFrame = document.getElementById("renderFrame");
+
+let templateHtml = null;
+let templateHtmlPath = null;
+let templateZip = null;
+const assetUrlCache = new Map();
 
 function normalizeWhitespace(text) {
   return text
@@ -56,10 +62,13 @@ function extractReadableText(raw, path) {
   return normalizeWhitespace(raw);
 }
 
-async function extractBestTextFromPages(file) {
+async function extractBestFromPages(file) {
   const zip = await JSZip.loadAsync(file);
   const candidates = collectFileCandidates(zip);
+
   let bestText = "";
+  let previewHtml = null;
+  let previewPath = null;
 
   for (const name of candidates) {
     const isLikelyText = /\.(xml|html|txt)$/i.test(name) || /preview/i.test(name);
@@ -74,8 +83,9 @@ async function extractBestTextFromPages(file) {
         bestText = cleaned;
       }
 
-      if (name.toLowerCase().endsWith("preview.html") && cleaned.length > 50) {
-        return cleaned;
+      if (name.toLowerCase().endsWith("preview.html") && raw.length > 50) {
+        previewHtml = raw;
+        previewPath = name;
       }
     } catch {
       // Ignore unreadable entries.
@@ -86,7 +96,7 @@ async function extractBestTextFromPages(file) {
     throw new Error("Could not extract readable text from this .pages file.");
   }
 
-  return bestText;
+  return { text: bestText, previewHtml, previewPath, zip };
 }
 
 function findPlaceholders(template) {
@@ -120,7 +130,7 @@ function getValueByPath(data, path) {
   }, data);
 }
 
-function renderTemplate(template, data) {
+function renderTemplateText(template, data) {
   return template.replace(/{{\s*([\w.]+)\s*}}/g, (_, token) => {
     const value = getValueByPath(data, token);
     return value === undefined || value === null ? "" : String(value);
@@ -221,6 +231,80 @@ function readMergedData() {
   return mergeObjects(dataFromJson, dataFromFields);
 }
 
+function dirname(path) {
+  const idx = path.lastIndexOf("/");
+  return idx === -1 ? "" : path.slice(0, idx + 1);
+}
+
+function resolveZipPath(baseFile, relativePath) {
+  if (!relativePath || relativePath.startsWith("data:") || relativePath.startsWith("http")) {
+    return null;
+  }
+
+  const normalized = relativePath.split("?")[0].split("#")[0];
+  if (normalized.startsWith("/")) {
+    return normalized.slice(1);
+  }
+
+  const base = dirname(baseFile);
+  const joined = `${base}${normalized}`;
+  const parts = [];
+
+  joined.split("/").forEach((segment) => {
+    if (!segment || segment === ".") return;
+    if (segment === "..") {
+      parts.pop();
+    } else {
+      parts.push(segment);
+    }
+  });
+
+  return parts.join("/");
+}
+
+async function getAssetUrl(zipPath) {
+  if (!templateZip || !zipPath) return null;
+  if (assetUrlCache.has(zipPath)) return assetUrlCache.get(zipPath);
+
+  const file = templateZip.file(zipPath);
+  if (!file) return null;
+
+  const blob = await file.async("blob");
+  const url = URL.createObjectURL(blob);
+  assetUrlCache.set(zipPath, url);
+  return url;
+}
+
+async function renderStyledHtml(data) {
+  if (!templateHtml || !templateHtmlPath) {
+    return "";
+  }
+
+  const filledHtml = renderTemplateText(templateHtml, data);
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(filledHtml, "text/html");
+
+  const links = [...doc.querySelectorAll("link[rel='stylesheet'][href]")];
+  for (const link of links) {
+    const zipPath = resolveZipPath(templateHtmlPath, link.getAttribute("href"));
+    const assetUrl = await getAssetUrl(zipPath);
+    if (assetUrl) {
+      link.setAttribute("href", assetUrl);
+    }
+  }
+
+  const images = [...doc.querySelectorAll("img[src]")];
+  for (const img of images) {
+    const zipPath = resolveZipPath(templateHtmlPath, img.getAttribute("src"));
+    const assetUrl = await getAssetUrl(zipPath);
+    if (assetUrl) {
+      img.setAttribute("src", assetUrl);
+    }
+  }
+
+  return `<!doctype html>\n${doc.documentElement.outerHTML}`;
+}
+
 extractTemplateButton.addEventListener("click", async () => {
   const file = templateFileInput.files?.[0];
   if (!file) {
@@ -231,10 +315,19 @@ extractTemplateButton.addEventListener("click", async () => {
   templateStatus.textContent = "Extracting template text...";
 
   try {
-    const extracted = await extractBestTextFromPages(file);
-    templateText.value = extracted;
-    createPlaceholderInputs(extracted);
-    templateStatus.textContent = "Template extracted. Now upload your data .pages file.";
+    const result = await extractBestFromPages(file);
+    templateText.value = result.text;
+    templateHtml = result.previewHtml;
+    templateHtmlPath = result.previewPath;
+    templateZip = result.zip;
+
+    createPlaceholderInputs(result.text);
+
+    if (templateHtml) {
+      templateStatus.textContent = "Template extracted with preview HTML styling (fonts/colors preserved in output).";
+    } else {
+      templateStatus.textContent = "Template extracted (no preview HTML styling found).";
+    }
   } catch (error) {
     templateStatus.textContent = `Template extraction failed: ${error.message}`;
   }
@@ -250,11 +343,10 @@ extractDataButton.addEventListener("click", async () => {
   dataStatus.textContent = "Extracting values from data file...";
 
   try {
-    const extractedText = await extractBestTextFromPages(file);
-    const dataObject = extractDataObjectFromText(extractedText);
-
+    const { text } = await extractBestFromPages(file);
+    const dataObject = extractDataObjectFromText(text);
     createPlaceholderInputs(templateText.value, dataObject);
-    dataStatus.textContent = "Data extracted and mapped to detected placeholders.";
+    dataStatus.textContent = "Data extracted and mapped to placeholders.";
   } catch (error) {
     dataStatus.textContent = `Data extraction failed: ${error.message}`;
   }
@@ -264,7 +356,7 @@ templateText.addEventListener("input", () => {
   createPlaceholderInputs(templateText.value);
 });
 
-renderButton.addEventListener("click", () => {
+renderButton.addEventListener("click", async () => {
   const template = templateText.value;
   if (!template.trim()) {
     renderStatus.textContent = "Template is empty.";
@@ -279,8 +371,22 @@ renderButton.addEventListener("click", () => {
     return;
   }
 
-  renderOutput.textContent = renderTemplate(template, data);
-  renderStatus.textContent = "Output rendered.";
+  const plainText = renderTemplateText(template, data);
+  renderOutput.textContent = plainText;
+
+  try {
+    const styledHtml = await renderStyledHtml(data);
+    if (styledHtml) {
+      renderFrame.srcdoc = styledHtml;
+      renderStatus.textContent = "Output rendered with template fonts/colors and plain text copy.";
+    } else {
+      renderFrame.srcdoc = `<pre>${plainText.replace(/</g, "&lt;")}</pre>`;
+      renderStatus.textContent = "Output rendered (styled preview unavailable for this file).";
+    }
+  } catch {
+    renderFrame.srcdoc = `<pre>${plainText.replace(/</g, "&lt;")}</pre>`;
+    renderStatus.textContent = "Output rendered (failed to load some style assets).";
+  }
 });
 
 copyButton.addEventListener("click", async () => {
@@ -291,7 +397,7 @@ copyButton.addEventListener("click", async () => {
   }
 
   await navigator.clipboard.writeText(text);
-  renderStatus.textContent = "Copied.";
+  renderStatus.textContent = "Plain text copied.";
 });
 
 createPlaceholderInputs(templateText.value);

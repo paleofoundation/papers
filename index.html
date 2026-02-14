@@ -10,8 +10,8 @@
     <main class="container">
       <h1>.pages Template Builder</h1>
       <p class="intro">
-        Upload a template <code>.pages</code>, then upload a data <code>.pages</code> to populate placeholders and render
-        final output text.
+        Upload a template <code>.pages</code>, then upload a data <code>.pages</code> to populate placeholders. The app
+        preserves preview HTML styling (fonts/colors) when available.
       </p>
 
       <section class="card">
@@ -24,8 +24,8 @@
       <section class="card">
         <h2>2) Template</h2>
         <label for="templateText">Template text</label>
-        <textarea id="templateText" rows="12" placeholder="Extracted template text appears here..."></textarea>
-        <p class="hint">Use placeholders like <code>{{clientName}}</code> and <code>{{invoice.total}}</code>.</p>
+        <textarea id="templateText" rows="10" placeholder="Extracted template text appears here..."></textarea>
+        <p class="hint">Placeholders: <code>{{clientName}}</code>, <code>{{invoice.total}}</code>.</p>
       </section>
 
       <section class="card">
@@ -33,18 +33,17 @@
         <input id="dataFile" type="file" accept=".pages,application/zip" />
         <button id="extractDataButton" type="button">Extract data values</button>
         <p id="dataStatus" class="status" aria-live="polite"></p>
-        <p class="hint">The app looks for JSON content first, then falls back to <code>key: value</code> lines.</p>
+        <p class="hint">Reads JSON first, then <code>key: value</code> lines as fallback.</p>
       </section>
 
       <section class="card">
         <h2>4) Fill values</h2>
-        <p class="hint">Detected placeholders from the template:</p>
         <div id="placeholderFields" class="placeholder-grid"></div>
 
         <details>
           <summary>Advanced: JSON data (optional override)</summary>
           <label for="jsonInput">JSON</label>
-          <textarea id="jsonInput" rows="8">{
+          <textarea id="jsonInput" rows="7">{
   "clientName": "Acme Co.",
   "invoice": {
     "total": "$1,250"
@@ -55,13 +54,14 @@
 
         <div class="actions">
           <button id="renderButton" type="button">Render output</button>
-          <button id="copyButton" type="button">Copy output</button>
+          <button id="copyButton" type="button">Copy plain text</button>
         </div>
         <p id="renderStatus" class="status" aria-live="polite"></p>
       </section>
 
       <section class="card">
-        <h2>Output</h2>
+        <h2>Output (styled + plain text)</h2>
+        <iframe id="renderFrame" class="output-frame" title="Styled output preview"></iframe>
         <pre id="renderOutput"></pre>
       </section>
     </main>
