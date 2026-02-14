@@ -1,5 +1,4 @@
 :root {
-  color-scheme: light dark;
   font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
 }
 
@@ -15,14 +14,6 @@ body {
   padding: 0 1rem 2rem;
 }
 
-h1 {
-  margin-bottom: 0.5rem;
-}
-
-.intro {
-  margin-bottom: 1.25rem;
-}
-
 .card {
   background: #fff;
   border: 1px solid #d8dee6;
@@ -32,6 +23,12 @@ h1 {
   box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
 }
 
+textarea,
+input,
+button {
+  font: inherit;
+}
+
 label {
   display: block;
   font-weight: 600;
@@ -39,12 +36,7 @@ label {
 }
 
 textarea,
-input,
-button {
-  font: inherit;
-}
-
-textarea {
+input {
   width: 100%;
   box-sizing: border-box;
   border: 1px solid #c8d0da;
@@ -63,14 +55,11 @@ button {
   cursor: pointer;
 }
 
-button:hover {
-  filter: brightness(0.98);
-}
-
 .actions {
   display: flex;
   gap: 0.5rem;
   flex-wrap: wrap;
+  margin-top: 0.5rem;
 }
 
 .status {
@@ -80,8 +69,24 @@ button:hover {
 }
 
 .hint {
-  margin-top: 0.5rem;
+  margin: 0.5rem 0;
   color: #344;
+}
+
+.placeholder-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.6rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.field code {
+  font-size: 0.9rem;
 }
 
 pre {

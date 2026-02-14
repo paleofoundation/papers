@@ -1,28 +1,29 @@
 # Pages Template Builder
 
-A lightweight browser app to:
+This app lets you:
 
-1. Ingest a `.pages` file.
-2. Extract readable text as a template (best effort).
-3. Let you insert placeholder data with JSON.
-4. Output final rendered text.
+1. Upload a `.pages` file.
+2. Extract readable text from that file.
+3. Fill placeholder values.
+4. Generate plain-text output.
 
-## Run locally
+## Run
 
 ```bash
 python3 -m http.server 8000
 ```
 
-Then open <http://localhost:8000>.
+Open <http://localhost:8000>.
 
-## How it works
+## Usage
 
-- `.pages` files are zip containers.
-- The app opens the zip in-browser using JSZip.
-- It searches likely text files (`preview.html`, `index.xml`, other `.xml/.html/.txt`) and extracts readable text.
-- You can edit extracted text and add placeholders like `{{name}}` or `{{invoice.total}}`.
-- Rendering replaces placeholders using JSON input.
+- Put placeholders in your template text, e.g. `{{clientName}}` and `{{invoice.total}}`.
+- The app auto-detects placeholders and creates input fields for them.
+- Click **Render output** to produce final text.
+- Optional: provide JSON in the advanced section; manual fields override JSON values.
 
-## Limitation
+## Notes on `.pages`
 
-Newer Apple Pages versions can store core document content in binary IWA files. In those files, only preview text (if available) can be extracted with this browser-only approach.
+- `.pages` is a zip container.
+- The app uses JSZip in the browser and extracts the best text candidate from likely files (`preview.html`, XML/HTML/TXT entries).
+- Some newer `.pages` files store main content in Apple IWA binaries. In that case extraction may be incomplete.

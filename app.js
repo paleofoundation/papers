@@ -4,48 +4,12 @@ const pagesFileInput = document.getElementById("pagesFile");
 const extractButton = document.getElementById("extractButton");
 const extractStatus = document.getElementById("extractStatus");
 const templateText = document.getElementById("templateText");
+const placeholderFields = document.getElementById("placeholderFields");
 const jsonInput = document.getElementById("jsonInput");
 const renderButton = document.getElementById("renderButton");
 const copyButton = document.getElementById("copyButton");
 const renderStatus = document.getElementById("renderStatus");
 const renderOutput = document.getElementById("renderOutput");
-
-function collectFileCandidates(zip) {
-  const preferredPatterns = [
-    /preview\.html$/i,
-    /index\.xml$/i,
-    /document\.xml$/i,
-    /\.xml$/i,
-    /\.html$/i,
-    /\.txt$/i,
-  ];
-
-  const names = Object.keys(zip.files).filter((name) => !zip.files[name].dir);
-  return names.sort((a, b) => {
-    const score = (name) => {
-      const lower = name.toLowerCase();
-      let s = 100;
-      preferredPatterns.forEach((pattern, idx) => {
-        if (pattern.test(lower)) s = Math.min(s, idx);
-      });
-      return s;
-    };
-    return score(a) - score(b);
-  });
-}
-
-function extractReadableText(raw, path) {
-  const ext = path.split(".").pop()?.toLowerCase() ?? "";
-
-  if (ext === "xml" || ext === "html") {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(raw, "text/xml");
-    const text = doc.documentElement?.textContent ?? raw;
-    return normalizeWhitespace(text);
-  }
-
-  return normalizeWhitespace(raw);
-}
 
 function normalizeWhitespace(text) {
   return text
@@ -54,6 +18,61 @@ function normalizeWhitespace(text) {
     .replace(/[\t ]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function collectFileCandidates(zip) {
+  const entries = Object.keys(zip.files).filter((name) => !zip.files[name].dir);
+  const scoreEntry = (name) => {
+    const lower = name.toLowerCase();
+    if (lower.endsWith("preview.html")) return 0;
+    if (lower.endsWith("index.xml")) return 1;
+    if (lower.endsWith("document.xml")) return 2;
+    if (lower.endsWith(".xml")) return 3;
+    if (lower.endsWith(".html")) return 4;
+    if (lower.endsWith(".txt")) return 5;
+    return 10;
+  };
+
+  return entries
+    .map((name) => ({ name, score: scoreEntry(name) }))
+    .sort((a, b) => a.score - b.score)
+    .map((item) => item.name);
+}
+
+function extractReadableText(raw, path) {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+
+  if (ext === "xml" || ext === "html") {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(raw, "text/xml");
+    return normalizeWhitespace(doc.documentElement?.textContent ?? raw);
+  }
+
+  return normalizeWhitespace(raw);
+}
+
+function findPlaceholders(template) {
+  const placeholders = new Set();
+  template.replace(/{{\s*([\w.]+)\s*}}/g, (_, token) => {
+    placeholders.add(token);
+    return "";
+  });
+  return [...placeholders];
+}
+
+function setValueByPath(target, path, value) {
+  const parts = path.split(".");
+  let current = target;
+
+  for (let index = 0; index < parts.length - 1; index += 1) {
+    const key = parts[index];
+    if (typeof current[key] !== "object" || current[key] === null) {
+      current[key] = {};
+    }
+    current = current[key];
+  }
+
+  current[parts[parts.length - 1]] = value;
 }
 
 function getValueByPath(data, path) {
@@ -70,11 +89,71 @@ function renderTemplate(template, data) {
   });
 }
 
+function createPlaceholderInputs(template) {
+  const placeholders = findPlaceholders(template);
+  placeholderFields.innerHTML = "";
+
+  if (placeholders.length === 0) {
+    placeholderFields.innerHTML = "<p class='hint'>No placeholders found. Add tokens like {{name}} in the template.</p>";
+    return;
+  }
+
+  placeholders.forEach((token) => {
+    const wrapper = document.createElement("div");
+    wrapper.className = "field";
+
+    const label = document.createElement("label");
+    label.innerHTML = `<code>{{${token}}}</code>`;
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.dataset.token = token;
+    input.placeholder = `Value for ${token}`;
+
+    wrapper.append(label, input);
+    placeholderFields.append(wrapper);
+  });
+}
+
+function readInputData() {
+  const dataFromFields = {};
+  const fieldInputs = placeholderFields.querySelectorAll("input[data-token]");
+
+  fieldInputs.forEach((input) => {
+    if (input.value.trim() !== "") {
+      setValueByPath(dataFromFields, input.dataset.token, input.value);
+    }
+  });
+
+  let dataFromJson = {};
+  const jsonRaw = jsonInput.value.trim();
+  if (jsonRaw) {
+    dataFromJson = JSON.parse(jsonRaw);
+  }
+
+  return mergeObjects(dataFromJson, dataFromFields);
+}
+
+function mergeObjects(base, override) {
+  if (typeof base !== "object" || base === null) return override;
+  if (typeof override !== "object" || override === null) return override;
+
+  const result = { ...base };
+  for (const key of Object.keys(override)) {
+    if (key in result && typeof result[key] === "object" && typeof override[key] === "object") {
+      result[key] = mergeObjects(result[key], override[key]);
+    } else {
+      result[key] = override[key];
+    }
+  }
+  return result;
+}
+
 async function extractTemplateFromPages(file) {
   const zip = await JSZip.loadAsync(file);
   const candidates = collectFileCandidates(zip);
 
-  const extractedBlocks = [];
+  let bestText = "";
 
   for (const name of candidates) {
     const isLikelyText = /\.(xml|html|txt)$/i.test(name) || /preview/i.test(name);
@@ -83,26 +162,25 @@ async function extractTemplateFromPages(file) {
     try {
       const raw = await zip.file(name)?.async("string");
       if (!raw) continue;
+
       const cleaned = extractReadableText(raw, name);
-      if (cleaned.length > 30) {
-        extractedBlocks.push(`--- ${name} ---\n${cleaned}`);
+      if (cleaned.length > bestText.length) {
+        bestText = cleaned;
+      }
+
+      if (name.toLowerCase().endsWith("preview.html") && cleaned.length > 50) {
+        return cleaned;
       }
     } catch {
-      // Skip binary or unreadable entries.
-    }
-
-    if (extractedBlocks.join("\n\n").length > 30000) {
-      break;
+      // Ignore non-readable entries.
     }
   }
 
-  if (extractedBlocks.length === 0) {
-    throw new Error(
-      "Could not extract readable text. This .pages file may use a newer internal format without plain-text previews.",
-    );
+  if (!bestText) {
+    throw new Error("Could not extract readable text from this .pages file.");
   }
 
-  return extractedBlocks.join("\n\n");
+  return bestText;
 }
 
 extractButton.addEventListener("click", async () => {
@@ -112,43 +190,49 @@ extractButton.addEventListener("click", async () => {
     return;
   }
 
-  extractStatus.textContent = "Extracting text from .pages document...";
+  extractStatus.textContent = "Extracting text...";
 
   try {
     const extracted = await extractTemplateFromPages(file);
     templateText.value = extracted;
-    extractStatus.textContent = "Template text extracted. You can now edit placeholders and render output.";
+    createPlaceholderInputs(extracted);
+    extractStatus.textContent = "Template extracted. Fill values and click Render output.";
   } catch (error) {
     extractStatus.textContent = `Extraction failed: ${error.message}`;
   }
 });
 
+templateText.addEventListener("input", () => {
+  createPlaceholderInputs(templateText.value);
+});
+
 renderButton.addEventListener("click", () => {
   const template = templateText.value;
   if (!template.trim()) {
-    renderStatus.textContent = "Template is empty. Upload/extract or paste template text first.";
+    renderStatus.textContent = "Template is empty.";
     return;
   }
 
   let data;
   try {
-    data = JSON.parse(jsonInput.value);
+    data = readInputData();
   } catch (error) {
     renderStatus.textContent = `Invalid JSON: ${error.message}`;
     return;
   }
 
-  const rendered = renderTemplate(template, data);
-  renderOutput.textContent = rendered;
-  renderStatus.textContent = "Output rendered successfully.";
+  renderOutput.textContent = renderTemplate(template, data);
+  renderStatus.textContent = "Output rendered.";
 });
 
 copyButton.addEventListener("click", async () => {
   const text = renderOutput.textContent;
   if (!text) {
-    renderStatus.textContent = "Nothing to copy yet. Render output first.";
+    renderStatus.textContent = "Nothing to copy yet.";
     return;
   }
   await navigator.clipboard.writeText(text);
-  renderStatus.textContent = "Output copied to clipboard.";
+  renderStatus.textContent = "Copied.";
 });
+
+createPlaceholderInputs(templateText.value);

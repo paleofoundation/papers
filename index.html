@@ -10,36 +10,42 @@
     <main class="container">
       <h1>.pages Template Builder</h1>
       <p class="intro">
-        Upload a <code>.pages</code> document, extract editable text, then render it by inserting data into
-        <code>{{placeholders}}</code>.
+        Upload a <code>.pages</code> file, extract its text, fill placeholders, and click render to generate output.
       </p>
 
       <section class="card">
-        <h2>1) Ingest .pages document</h2>
+        <h2>1) Upload and extract</h2>
         <input id="pagesFile" type="file" accept=".pages,application/zip" />
-        <button id="extractButton">Extract template text</button>
+        <button id="extractButton" type="button">Extract text from .pages</button>
         <p id="extractStatus" class="status" aria-live="polite"></p>
       </section>
 
       <section class="card">
-        <h2>2) Template text</h2>
-        <label for="templateText">Template</label>
-        <textarea id="templateText" rows="12" placeholder="Extracted template text appears here..."></textarea>
-        <p class="hint">Tip: Use placeholders like <code>{{clientName}}</code> or <code>{{invoice.total}}</code>.</p>
+        <h2>2) Template</h2>
+        <label for="templateText">Template text</label>
+        <textarea id="templateText" rows="12" placeholder="Extracted text appears here..."></textarea>
+        <p class="hint">Use placeholders like <code>{{clientName}}</code> and <code>{{invoice.total}}</code>.</p>
       </section>
 
       <section class="card">
-        <h2>3) Data input + render</h2>
-        <label for="jsonInput">Data (JSON)</label>
-        <textarea id="jsonInput" rows="10">{
+        <h2>3) Fill values</h2>
+        <p class="hint">Detected placeholders from the template:</p>
+        <div id="placeholderFields" class="placeholder-grid"></div>
+
+        <details>
+          <summary>Advanced: JSON data</summary>
+          <label for="jsonInput">JSON</label>
+          <textarea id="jsonInput" rows="8">{
   "clientName": "Acme Co.",
   "invoice": {
     "total": "$1,250"
   },
   "date": "2026-02-14"
 }</textarea>
+        </details>
+
         <div class="actions">
-          <button id="renderButton">Render output text</button>
+          <button id="renderButton" type="button">Render output</button>
           <button id="copyButton" type="button">Copy output</button>
         </div>
         <p id="renderStatus" class="status" aria-live="polite"></p>
