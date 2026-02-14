@@ -1,0 +1,15 @@
+{
+  "name": "docx-style-family-local-first",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w apps/worker & npm run dev -w apps/web",
+    "dev:web": "npm run dev -w apps/web",
+    "dev:worker": "npm run dev -w apps/worker",
+    "build": "npm run build -w apps/web",
+    "test": "npm run test -w packages/engine"
+  }
+}
